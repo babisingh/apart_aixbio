@@ -1,202 +1,38 @@
-# Adversarial Review: AixBio Pipeline
+# Adversarial Review: aixbio biocompound pipeline
 
-## Verdict
+The code is a **hybrid leaning toward demo-ware**: two of six steps are real engineering, the rest are LLM scaffolding, stubs, or fake data wearing valid file formats. Architecture is also dramatically over-spec'd vs handoff.md.
 
-Competent scaffolding, but several bugs and fundamental shortcuts that would produce incorrect biological output.
+## Architecture: spec rejected DAGs; code uses LangGraph
 
----
+handoff.md:472 explicitly says **"Why not a DAG? The pipeline is mostly linear"** and prescribes a ~50-line functional framework with `pipeline()`/`retry()`/`fork()`. Implementation is `aixbio/graph/main_graph.py:18-72` — a full LangGraph StateGraph with subgraphs, conditional_edges, `Send()` fan-out, and human-in-the-loop checkpoints (`human_checkpoint_chains`, `human_checkpoint_plasmid`) **not in the spec at all**. Functionally equivalent, ~10× the code, harder to debug.
 
-## CRITICAL: Bugs That Produce Wrong Results
+## Step-by-step science verdict
 
-### 1. 6xHis tag encodes the wrong protein
+| Step | Verdict | Evidence |
+|---|---|---|
+| 1. Sequence retrieval | 🔴 **LLM hallucination risk** | `nodes/sequence_retrieval.py:19-93` hands UniProt JSON to an OpenRouter LLM and asks it to extract mature chain coordinates. On parse failure (lines 51-61) it **falls back to the full precursor** — for insulin that means signal peptide + C-peptide + A + B as one blob. No deterministic feature-table parser. No insulin A+B extraction test. |
+| 2. Codon optimization | 🟢 **Real** | `tools/codon_tables.py:61-66` uses real `python-codon-tables`; `tools/cai.py:8-31` is a correct Sharp & Li CAI. One small bug in `nodes/codon_optimization.py:35` — the post-swap window is `pos + site_len * 2` instead of `pos + site_len`, which can mask whether the site was actually removed. |
+| 3. Cassette assembly | 🔴 **6xHis frameshift bug** | `nodes/cassette_assembly.py:12` defines `"6xHis": "CACCACCACCACCACCACC"` — **19 nt**, one trailing `C` too many (correct is 18 nt = `CAC`×6). The comment on line 11 even claims "CAC×6 = 18 nt" but the literal disagrees. Cassette frame = `ATG (3) + tag (19) + Enterokinase (15) = 37 nt` before the gene → `37 mod 3 = 1` → **every emitted cassette reads the gene in frame +1, encoding a nonfunctional protein**. Step 5 back-translation will now raise `ValueError` (`tools/codon_tables.py:52-56`) instead of silently mistranslating, so the pipeline halts rather than producing wrong-but-plausible output. Glycosylation N-X-S/T scan is otherwise solid. **One-char fix: drop the trailing `C`.** |
+| 4. Plasmid assembly | 🟡 **Valid GenBank, fake backbone** | `tools/genbank.py:45` literally does `plasmid_seq = "N" * 5369 + cassette_dna`. The pET-28a(+) backbone is 5369 N's. The file parses, the features annotate, but **no lab can synthesize this**. The test only asserts "LOCUS" appears in the output. |
+| 5. Validation | 🟡 **Checks real, remediation LLM-driven** | GC/CAI/restriction/back-translation/rare-codon are all deterministic and correct. RNA secondary structure (`tools/rna_fold.py`) is a Nussinov heuristic with hardcoded −1.5 kcal/pair — file itself admits this isn't production. **Remediation loop** (`nodes/remediation_agent.py:16-139`) asks the LLM to suggest codon swaps, then applies them — non-deterministic, can introduce new restriction sites, no test coverage. |
+| 6. Structural validation | 🔴 **Stub** | `tools/alphafold.py:20-27` self-documents as STUBBED, returns `plddt_mean=0.0`. |
 
-**File:** `aixbio/nodes/cassette_assembly.py:7`
+## Other significant issues
 
-```python
-TAG_SEQUENCES = {"6xHis": "CACCACCACCACCACCAC"}
-```
+- **No file output.** Spec deliverables list FASTA/GenBank/JSON files. There is **no `open()`/`write()`** in the pipeline nodes — `PlasmidChain.genbank_file` holds the string content, not a path. `__main__.py` runs the graph in memory and exits.
+- **UniProt error handling.** `tools/uniprot.py` retries are fine, but if the entry lacks a `sequence` key (or returns 404), downstream `extract_sequence()` KeyErrors with no user-facing message.
+- **Test coverage gaps.** `test_deterministic_nodes.py` hardcodes the insulin B-chain AA string, so the LLM-driven Step 1 is **never tested**. No remediation-agent test. No end-to-end test from `compound_id="P01308"`.
+- **Data models match spec.** Frozen dataclasses across `models/` are faithful — one of the few clean wins.
 
-This is 17 nucleotides -- not divisible by 3. It will **frameshift the entire downstream gene**. A 6xHis tag is 6 histidines = `CAC CAC CAC CAC CAC CAC` = 18 nucleotides. The sequence here is missing a `C`. This single typo makes every cassette produced by the pipeline encode a completely wrong protein.
+## Hottest flaws (in priority order)
 
-### 2. Validation runs on the wrong DNA
+1. **6xHis tag is 19 nt, frameshifts the gene** (`cassette_assembly.py:12`) — every cassette currently emitted is biologically broken. Trip-wire: Step 5 back-translation now raises rather than silently mistranslating. One-character fix.
+2. **Step 1 is an LLM black box** with a fallback to the full precursor — the silent-corruption mode is the worst kind.
+3. **Plasmid backbone is 5369 N's** — output is structurally valid and scientifically useless.
+4. **Step 5 remediation uses an LLM** instead of deterministic hill-climbing on GC/CAI; can suggest fixes that re-introduce sites it just removed.
+5. **No artifacts written to disk** — the spec's deliverables list isn't actually delivered.
+6. **LangGraph over-engineering** — human checkpoints and dual-graph compilation for what the spec described as a linear chain with one retry boundary.
 
-**File:** `aixbio/nodes/sequence_validation.py:16`
+## Bottom line
 
-```python
-dna = dna_chain.dna_sequence  # the raw optimized gene
-```
-
-But the actual construct that goes into the host cell is the **cassette** (`ATG + tag + protease + gene + stop`). The validation checks GC content, CAI, restriction sites, and RNA secondary structure on just the gene -- not the actual expression construct. Restriction sites in the tag or protease sequences would go undetected. The 5' RNA structure check is particularly wrong since the ribosome encounters the tag region first, not the gene.
-
-### 3. Codon optimization restriction-site removal is fragile
-
-**File:** `aixbio/nodes/codon_optimization.py:26-29`
-
-```python
-for ci in range(codon_start, min(codon_end, len(codons))):
-    alts = synonymous_alternatives(codons[ci])
-    if alts:
-        codons[ci] = alts[0]
-        break  # only swaps ONE codon per site
-```
-
-It picks `alts[0]` -- the first alphabetical alternative, not one that actually eliminates the restriction site. If the first alternative still contains part of the recognition sequence (which is likely since restriction sites span codon boundaries), the site persists. The 5-pass loop provides some resilience, but there's no guarantee the greedy choice converges.
-
-### 4. Enterokinase recognition site is wrong
-
-**File:** `aixbio/nodes/cassette_assembly.py:11`
-
-```python
-PROTEASE_SITE_SEQUENCES = {"Enterokinase": "GATGATGATGATAAAG"}
-```
-
-Enterokinase cleaves after DDDDK (Asp-Asp-Asp-Asp-Lys). The DNA for DDDDK would be `GAT GAT GAT GAT AAA` or `AAG` for the lysine. The sequence here is `GATGATGATGATAAAG` = 16 nt, which is not divisible by 3 either. Combined with the 6xHis bug, the frame is now doubly shifted.
-
-### 5. CNBr "protease site" is just ATG
-
-**File:** `aixbio/nodes/cassette_assembly.py:13`
-
-```python
-"CNBr": "ATG"
-```
-
-CNBr is a chemical cleavage reagent that cuts after methionine, not a protease with a recognition sequence you encode. Using `ATG` (Met) as the site means the cassette would just have `ATG ATG` (start + "site") which adds an extra methionine. This is misleading at best.
-
----
-
-## MAJOR: Architectural & Correctness Issues
-
-### 6. `translate_dna` silently drops trailing nucleotides
-
-**File:** `aixbio/tools/codon_tables.py:52`
-
-```python
-return "".join(translate_codon(c) for c in codons if len(c) == 3)
-```
-
-If the DNA length isn't divisible by 3 (e.g., after the frameshift from bug #1), the trailing 1-2 nucleotides are silently dropped. This masks frameshifts rather than catching them.
-
-### 7. RNA fold estimator is biologically meaningless
-
-**File:** `aixbio/tools/rna_fold.py:18-23`
-
-The heuristic pairs the first nucleotide with the last, second with second-to-last, etc. -- a simple palindrome matcher. Real RNA secondary structure involves non-sequential base pairing, loops, bulges, and stacking energies. This will false-negative on actual stable hairpins and false-positive on palindromic sequences. The -10 kcal/mol threshold is calibrated for real folding algorithms; applying it to this heuristic produces meaningless results.
-
-### 8. GenBank plasmid is fake
-
-**File:** `aixbio/tools/genbank.py:22`
-
-```python
-plasmid_seq = "N" * PET28A_BACKBONE_SIZE + cassette_dna
-```
-
-The "backbone" is just 5369 N's. No promoter, no RBS, no terminator, no origin of replication, no antibiotic resistance gene. The GenBank file is structurally valid but biologically useless -- you couldn't order this and have it work. The `pET28A_BACKBONE_SIZE = 5369` is stated as fact but never verified.
-
-### 9. Plasmid assembly adds restriction sites that Step 2 removed
-
-**File:** `aixbio/nodes/plasmid_assembly.py:14-16`
-
-```python
-flank_5 = ENZYME_SITES.get(cloning_sites[0], "")  # e.g., GGATCC for BamHI
-flank_3 = ENZYME_SITES.get(cloning_sites[1], "")  # e.g., CTCGAG for XhoI
-flanked_dna = flank_5 + cassette.full_dna + flank_3
-```
-
-Step 2 removes BamHI and XhoI sites from the gene. Step 4 adds them right back at the flanks. If validation were run on the flanked cassette (which it should be per point #2), it would always fail the restriction sites check. The current code avoids this by validating the un-flanked gene -- but that's the wrong thing to validate.
-
-### 10. AlphaFold is entirely stubbed
-
-**File:** `aixbio/tools/alphafold.py`
-
-Returns all zeros. Step 6 will always report pLDDT=0, RMSD=0, perplexity=0. Any downstream use of these signals is worthless. This isn't acknowledged prominently in the CLI output.
-
----
-
-## MODERATE: Design Concerns
-
-### 11. Spec says "Composable Step Chain" but implementation uses LangGraph
-
-The `handoff.md` describes a simple functional pipeline (`pipeline()`, `retry()`, `fork()` -- ~50 LOC). The actual implementation uses LangGraph with `StateGraph`, `Send`, `interrupt()`, `MemorySaver`, etc. -- a heavy framework dependency. This isn't inherently wrong, but it's a complete departure from the spec's design rationale section. The stated advantages of simplicity and debuggability are lost.
-
-### 12. LLM is in the critical path for chain extraction with a fragile fallback
-
-**File:** `aixbio/nodes/sequence_retrieval.py:48`
-
-If the LLM response can't be parsed, the fallback uses the **full precursor sequence** including signal peptides and pro-domains:
-
-```python
-def _fallback_single_chain(compound_id, name, sequence):
-    return {"chains": [{"id": f"{name}_{compound_id}", "aa_sequence": sequence, ...}]}
-```
-
-This is the exact opposite of what you want. For insulin, the fallback would produce a 110-aa preproinsulin instead of the 21-aa A-chain and 30-aa B-chain. The pipeline would happily optimize and assemble a protein that cannot fold correctly.
-
-### 13. Glycosylation warning detection is brittle
-
-**File:** `aixbio/nodes/cassette_assembly.py:42-44`
-
-```python
-chain_id_upper = dna_chain.id.upper()
-for compound in glycosylation_compounds:
-    if compound.upper() in chain_id_upper:
-```
-
-This checks if "EPO" or "TPA" appears in the chain ID string. If the LLM names the chain "Erythropoietin_A" or "tPA_Kringle", it won't match "EPO" or will coincidentally match "TPA". This should be based on the protein record / UniProt annotations, not string matching on an LLM-generated ID.
-
-### 14. No retry/timeout on the UniProt API call
-
-`fetch_uniprot_entry` makes a single HTTP call with a 30s timeout. No retries. UniProt has intermittent availability issues. A single network hiccup kills the pipeline.
-
-### 15. `asyncio.run()` called inside a sync node
-
-**File:** `aixbio/nodes/sequence_retrieval.py:21`
-
-```python
-entry = asyncio.run(fetch_uniprot_entry(compound_id))
-```
-
-If LangGraph is already running an event loop (e.g., async execution), this will raise `RuntimeError: cannot run nested event loop`. This works now because the graph is invoked synchronously, but it's a landmine for any future async execution context.
-
-### 16. Rare codon list includes CUA but the codon table uses uppercase T not U
-
-**File:** `aixbio/tools/codon_tables.py:43`
-
-`RARE_CODONS_ECOLI` contains `"CUA"` but DNA codons use `T` not `U`. The check at `sequence_validation.py:63` compares `c.upper()` against the set -- but `CUA` is an RNA codon, never produced by the DNA-based codon optimizer. This rare codon will never be detected. Should be `CTA`.
-
----
-
-## MINOR: Test Coverage & Code Quality
-
-### 17. Tests only cover the happy path for one compound
-
-All tests use insulin B-chain (30 aa). No tests for multi-chain proteins, long sequences, edge-case amino acids (selenocysteine), or the remediation loop. The LLM-dependent nodes (Step 1, Step 5b) have zero test coverage.
-
-### 18. `remediation_history` uses `append_log` reducer but `apply_fixes` returns a plain list
-
-In `chain_state.py:36`, `remediation_history` uses `Annotated[list[RemediationAction], append_log]`, so each return appends. But `apply_fixes` returns `{"remediation_history": actions}` where `actions` is the list from *this round only*. This means the history accumulates correctly via the reducer, but it's non-obvious and easy to break.
-
-### 19. `package_result_failed` is identical to `package_result`
-
-**File:** `aixbio/nodes/merge_results.py:24`
-
-```python
-def package_result_failed(state):
-    return package_result(state)
-```
-
-Failed chains are packaged identically to passing chains. There's no status field that distinguishes "passed validation" from "gave up after max retries." The `validation_passed` field reflects the last check, which will be `False`, but there's no "exceeded max attempts" flag.
-
----
-
-## Summary Scorecard
-
-| Area | Rating | Notes |
-|------|--------|-------|
-| Architecture | Decent | Clean separation of concerns, good use of typed state |
-| Correctness | **Poor** | Frameshift bug in 6xHis tag, validation on wrong DNA, CUA vs CTA bug |
-| Biological fidelity | **Poor** | Fake backbone, meaningless RNA fold, wrong protease sites |
-| Test coverage | Weak | One compound, no LLM paths, no remediation loop |
-| Production readiness | Not ready | Stubs for 2 key systems, fragile LLM parsing, no retry logic |
-| Spec adherence | Mixed | Pipeline shape matches, architecture diverges from spec |
-
-The most dangerous issue is **bug #1** -- the 6xHis frameshift. Every single cassette this pipeline produces encodes a frameshifted, nonfunctional protein. If someone trusted this output and sent it to synthesis, they'd waste time and money. Bug #16 (CUA vs CTA) means a validation check is silently non-functional. Together these indicate the code was never run end-to-end against a real compound and compared to a known-good reference.
+Steps 2 and 3 are publishable-quality. Steps 1, 4, 5-remediation, and 6 are scaffolding that *looks* like science. For a hackathon demo this is fine; for anything claiming "production-ready DNA" (handoff.md:5) it would lose money. The cheapest fixes with the largest payoff: replace Step 1's LLM with a 30-line deterministic UniProt feature parser, drop a real pET-28a(+) FASTA into the repo, and write the JSON/GenBank artifacts to disk in `__main__.py`.
