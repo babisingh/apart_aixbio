@@ -16,6 +16,7 @@ from aixbio.models.protein import Chain, ProteinRecord
 from aixbio.models.validation import CheckResult
 from aixbio.nodes.escalation_agent import _parse_and_validate, _strip_codefence
 from aixbio.nodes.routers import escalation_router, validation_router
+from aixbio.tools.restriction_sites import get_native_enzymes
 
 
 INSULIN_B = Chain(
@@ -44,8 +45,8 @@ def _make_dna_chain() -> DNAChain:
 def _make_input_state(**overrides):
     state = {
         "chain": INSULIN_B,
-        "host_organism": "E. coli K12",
-        "avoid_sites": ("BamHI", "XhoI", "EcoRI"),
+        "host_organism": "Escherichia coli",
+        "avoid_sites": get_native_enzymes("Escherichia coli"),
         "tag_type": "6xHis",
         "protease_site": "Enterokinase",
         "vector": "pET-28a(+)",

@@ -17,7 +17,7 @@ from aixbio.tools.codon_tables import (
     translate_codon,
 )
 from aixbio.tools.gc import compute_gc
-from aixbio.tools.restriction_sites import ENZYME_SITES, find_restriction_sites
+from aixbio.tools.restriction_sites import find_restriction_sites, get_recognition_site, has_restriction_sites
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,7 @@ def _plan_restriction_site_fixes(
     hits = find_restriction_sites(dna, avoid_sites)
     fixes = []
     for enzyme, pos in hits:
-        site_seq = ENZYME_SITES[enzyme]
-        site_len = len(site_seq)
+        site_len = len(get_recognition_site(enzyme))
         codon_start = pos // 3
         codon_end = (pos + site_len - 1) // 3 + 1
         fixed = False
@@ -82,7 +81,8 @@ def _plan_restriction_site_fixes(
             for alt in synonymous_alternatives(codons[ci]):
                 old = codons[ci]
                 codons[ci] = alt
-                if site_seq not in "".join(codons):
+                local_dna = "".join(codons)[max(0, pos - site_len):pos + site_len * 2]
+                if not has_restriction_sites(local_dna, [enzyme]):
                     fixes.append(PlannedFix(
                         check_name="restriction_sites",
                         strategy="synonymous_codon_swap",

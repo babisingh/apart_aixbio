@@ -1,6 +1,7 @@
 """Integration test: run the chain subgraph end-to-end (no LLM calls needed)."""
 from aixbio.graph.chain_subgraph import compile_chain_subgraph
 from aixbio.models.protein import Chain, ProteinRecord
+from aixbio.tools.restriction_sites import get_native_enzymes
 
 
 INSULIN_B = Chain(
@@ -15,8 +16,8 @@ PROTEIN = ProteinRecord(uniprot_id="P01308", name="Insulin", chains=(INSULIN_B,)
 def _make_input_state():
     return {
         "chain": INSULIN_B,
-        "host_organism": "E. coli K12",
-        "avoid_sites": ("BamHI", "XhoI", "EcoRI"),
+        "host_organism": "Escherichia coli",
+        "avoid_sites": get_native_enzymes("Escherichia coli"),
         "tag_type": "6xHis",
         "protease_site": "Enterokinase",
         "vector": "pET-28a(+)",

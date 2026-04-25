@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from aixbio.config import (
-    DEFAULT_AVOID_SITES,
     DEFAULT_CLONING_SITES,
     DEFAULT_HOST,
     DEFAULT_MAX_REMEDIATION_ATTEMPTS,
@@ -19,6 +18,7 @@ from aixbio.config import (
     DEFAULT_VECTOR,
 )
 from aixbio.graph.main_graph import compile_pipeline
+from aixbio.tools.restriction_sites import get_native_enzymes
 
 
 def main():
@@ -38,7 +38,7 @@ def main():
     initial_state = {
         "compound_id": args.compound_id,
         "host_organism": args.host,
-        "avoid_sites": DEFAULT_AVOID_SITES,
+        "avoid_sites": get_native_enzymes(args.host),
         "tag_type": DEFAULT_TAG_TYPE,
         "protease_site": DEFAULT_PROTEASE_SITE,
         "vector": DEFAULT_VECTOR,

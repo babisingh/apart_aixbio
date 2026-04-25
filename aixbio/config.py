@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_HOST = "E. coli K12"
-DEFAULT_AVOID_SITES = ("BamHI", "XhoI", "EcoRI")
+DEFAULT_HOST = "Escherichia coli"
 DEFAULT_TAG_TYPE = "6xHis"
 DEFAULT_PROTEASE_SITE = "Enterokinase"
 DEFAULT_VECTOR = "pET-28a(+)"

@@ -8,7 +8,12 @@ from aixbio.tools.codon_tables import (
 )
 from aixbio.tools.gc import compute_gc
 from aixbio.tools.cai import compute_cai
-from aixbio.tools.restriction_sites import find_restriction_sites, has_restriction_sites
+from aixbio.tools.restriction_sites import (
+    find_restriction_sites,
+    get_native_enzymes,
+    get_recognition_site,
+    has_restriction_sites,
+)
 
 
 def test_translate_codon():
@@ -64,3 +69,20 @@ def test_rna_fold():
     from aixbio.tools.rna_fold import estimate_five_prime_dg
     dg = estimate_five_prime_dg("ATGATGATGATGATG")
     assert isinstance(dg, float)
+
+
+def test_native_enzymes_ecoli():
+    enzymes = get_native_enzymes("Escherichia coli")
+    assert len(enzymes) > 0
+    assert all(e.startswith("Eco") for e in enzymes)
+
+
+def test_native_enzymes_unknown_organism():
+    enzymes = get_native_enzymes("Unknown organism")
+    assert enzymes == ()
+
+
+def test_recognition_site():
+    assert get_recognition_site("EcoRI") == "GAATTC"
+    assert get_recognition_site("BamHI") == "GGATCC"
+    assert get_recognition_site("NotI") == "GCGGCCGC"

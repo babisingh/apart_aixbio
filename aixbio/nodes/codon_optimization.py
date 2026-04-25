@@ -5,7 +5,7 @@ from aixbio.state.chain_state import ChainSubgraphState
 from aixbio.tools.cai import compute_cai
 from aixbio.tools.codon_tables import best_ecoli_codon, split_codons, synonymous_alternatives, translate_codon
 from aixbio.tools.gc import compute_gc
-from aixbio.tools.restriction_sites import ENZYME_SITES, find_restriction_sites
+from aixbio.tools.restriction_sites import find_restriction_sites, get_recognition_site, has_restriction_sites
 
 
 def codon_optimization(state: ChainSubgraphState) -> dict:
@@ -20,8 +20,7 @@ def codon_optimization(state: ChainSubgraphState) -> dict:
         if not hits:
             break
         for enzyme, pos in hits:
-            site_len = len(ENZYME_SITES[enzyme])
-            site_seq = ENZYME_SITES[enzyme]
+            site_len = len(get_recognition_site(enzyme))
             codon_start = pos // 3
             codon_end = (pos + site_len - 1) // 3 + 1
             site_removed = False
@@ -32,7 +31,8 @@ def codon_optimization(state: ChainSubgraphState) -> dict:
                     codons[ci] = alt
                     test_dna = "".join(codons)
                     # Check if this substitution eliminated the specific site
-                    if site_seq not in test_dna[max(0, pos - site_len):pos + site_len]:
+                    local_dna = test_dna[max(0, pos - site_len):pos + site_len * 2]
+                    if not has_restriction_sites(local_dna, [enzyme]):
                         site_removed = True
                         break
                 if site_removed:

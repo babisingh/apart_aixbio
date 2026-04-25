@@ -5,6 +5,7 @@ from aixbio.nodes.cassette_assembly import cassette_assembly
 from aixbio.nodes.plasmid_assembly import plasmid_assembly
 from aixbio.nodes.sequence_validation import sequence_validation
 from aixbio.tools.codon_tables import translate_dna
+from aixbio.tools.restriction_sites import get_native_enzymes
 
 INSULIN_B_CHAIN = Chain(
     id="Insulin_B",
@@ -22,8 +23,9 @@ PROTEIN_RECORD = ProteinRecord(
 def _make_chain_state(**overrides):
     base = {
         "chain": INSULIN_B_CHAIN,
-        "host_organism": "E. coli K12",
-        "avoid_sites": ("BamHI", "XhoI", "EcoRI"),
+        "host_organism": "Escherichia coli",
+        "avoid_sites": get_native_enzymes("Escherichia coli"),
+
         "tag_type": "6xHis",
         "protease_site": "Enterokinase",
         "vector": "pET-28a(+)",

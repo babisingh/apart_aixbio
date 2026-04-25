@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from Bio.SeqUtils import gc_fraction
+
 
 def compute_gc(dna: str) -> float:
     if not dna:
         return 0.0
-    dna = dna.upper()
-    gc_count = dna.count("G") + dna.count("C")
-    return gc_count / len(dna)
+    return gc_fraction(dna)
