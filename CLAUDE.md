@@ -16,17 +16,19 @@ uv sync
 uv run aixbio P01308                          # insulin, with human checkpoints
 uv run aixbio P01308 --auto-approve           # skip human review prompts
 uv run aixbio P01308 --structural             # include AlphaFold step (stubbed)
+uv run aixbio P01308 --escalation             # enable LLM escalation on remediation failure
 
 # Run tests
 uv run pytest                                 # all tests
 uv run pytest tests/test_deterministic_nodes.py  # steps 2-5 without LLM
 uv run pytest tests/test_tools.py             # unit tests for bio tools
 uv run pytest tests/test_chain_subgraph.py    # LangGraph subgraph integration
+uv run pytest tests/test_escalation.py        # escalation agent (mocked LLM)
 ```
 
 ## Environment
 
-Requires `OPENROUTER_API_KEY` in `.env`. The LLM model defaults to `deepseek/deepseek-v4-flash` via OpenRouter (`LLM_MODEL` env var). Only Step 1 (sequence retrieval) and the remediation agent make LLM calls; all other steps are deterministic.
+Requires `OPENROUTER_API_KEY` in `.env`. The LLM model defaults to `deepseek/deepseek-v4-flash` via OpenRouter (`LLM_MODEL` env var). Step 1 (sequence retrieval) always makes an LLM call. The escalation agent (`--escalation` flag) makes one LLM call per chain only when the deterministic remediation loop exhausts its retry budget. All other steps are deterministic.
 
 ## Architecture
 
@@ -34,12 +36,12 @@ The pipeline is a LangGraph StateGraph with two levels:
 
 **Main graph** (`graph/main_graph.py`): sequence_retrieval -> human_checkpoint -> fan-out to per-chain processing -> merge_results -> human_checkpoint -> optional structural_validation
 
-**Chain subgraph** (`graph/chain_subgraph.py`): codon_optimization -> cassette_assembly -> plasmid_assembly -> sequence_validation. On validation failure, routes to a remediation loop (LLM-driven) that applies fixes and revalidates, up to `max_remediation_attempts`.
+**Chain subgraph** (`graph/chain_subgraph.py`): codon_optimization -> cassette_assembly -> plasmid_assembly -> sequence_validation. On validation failure, routes to a deterministic remediation loop that applies synonymous codon swaps and revalidates, up to `max_remediation_attempts`. If remediation is exhausted and `--escalation` is enabled, an LLM escalation agent fires once and chooses one of four outcomes: `apply_plan` (try specific swaps the greedy loop missed), `incompatible` (host cannot express this protein), `change_strategy` (change tag/protease/vector/cloning sites and re-run), or `give_up` (pipeline bug or unfixable). The `escalation_used` flag prevents re-entry.
 
 ### Key directories
 
-- `models/` - Frozen dataclasses for inter-step data (ProteinRecord, DNAChain, CassetteChain, PlasmidChain, ValidationReport, etc.)
-- `nodes/` - LangGraph node functions. Each takes and returns a state dict. Deterministic nodes (codon_optimization, cassette_assembly, plasmid_assembly, sequence_validation) vs LLM-backed nodes (sequence_retrieval, remediation_agent).
+- `models/` - Frozen dataclasses for inter-step data (ProteinRecord, DNAChain, CassetteChain, PlasmidChain, ValidationReport, EscalationDecision, etc.). New escalation models are a discriminated union on the `kind` field; routers branch on `kind`, never on free text.
+- `nodes/` - LangGraph node functions. Each takes and returns a state dict. Deterministic nodes (codon_optimization, cassette_assembly, plasmid_assembly, sequence_validation, remediation_agent) vs LLM-backed nodes (sequence_retrieval, escalation_agent).
 - `tools/` - Pure utility functions: codon tables, CAI calculation, GC content, restriction site scanning, RNA fold estimation, GenBank file generation, UniProt/AlphaFold API clients.
 - `state/` - TypedDict state definitions. `PipelineState` for the main graph, `ChainSubgraphState` for per-chain processing. Uses LangGraph `Annotated` reducers for list accumulation fields.
 - `prompts/` - LLM prompt templates for sequence retrieval and remediation.
