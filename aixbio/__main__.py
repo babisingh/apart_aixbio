@@ -124,6 +124,15 @@ def _print_results(result: dict):
                 mark = "+" if check.passed else "X"
                 print(f"    [{mark}] {check.name}: {check.value} (threshold: {check.threshold})")
 
+    structure = result.get("structure_report")
+    if structure:
+        print(f"\nStructural Validation (AlphaFold):")
+        for sr in structure.chains:
+            rmsd_str = f"{sr.rmsd_to_ref:.3f} Å" if sr.rmsd_to_ref is not None else "N/A"
+            print(f"  Chain {sr.id}: pLDDT={sr.plddt_mean:.1f}, RMSD={rmsd_str}")
+            if sr.structure_file:
+                print(f"    Structure file: {sr.structure_file}")
+
     chain_results = result.get("chain_results", [])
     if chain_results:
         print(f"\nChain Results ({len(chain_results)}):")

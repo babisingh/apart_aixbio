@@ -32,7 +32,7 @@ def structural_validation(state: PipelineState) -> dict:
     for chain in protein.chains:
         result = asyncio.run(predict_structure(
             chain_id=chain.id,
-            aa_sequence=chain.aa_sequence,
+            uniprot_id=protein.uniprot_id,
             reference_pdb=ref_pdb,
         ))
         results.append(result)
