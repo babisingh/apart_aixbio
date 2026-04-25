@@ -24,9 +24,9 @@ _PET28A_FEATURES = [
 ]
 
 _BACKBONE_SEARCH_PATHS = [
-    Path(__file__).parent.parent / "data" / "pET-28a.fasta",
-    Path(__file__).parent.parent / "data" / "pET-28a.fa",
-    Path(__file__).parent.parent / "data" / "pET-28a.gb",
+    Path(__file__).parent.parent.parent / "data" / "pET-28a.fasta",
+    Path(__file__).parent.parent.parent / "data" / "pET-28a.fa",
+    Path(__file__).parent.parent.parent / "data" / "pET-28a.gb",
 ]
 
 _cached_backbone: str | None = None
