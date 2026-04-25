@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 
 from aixbio.graph.chain_subgraph import compile_chain_subgraph
@@ -66,7 +67,30 @@ def build_main_graph() -> StateGraph:
     return g
 
 
+_ALLOWED_MSGPACK_MODULES = [
+    ("aixbio.models.protein", "Chain"),
+    ("aixbio.models.protein", "ProteinRecord"),
+    ("aixbio.models.validation", "CheckResult"),
+    ("aixbio.models.validation", "ChainValidation"),
+    ("aixbio.models.validation", "ValidationReport"),
+    ("aixbio.models.dna", "DNAChain"),
+    ("aixbio.models.dna", "OptimizedDNA"),
+    ("aixbio.models.dna", "CassetteElement"),
+    ("aixbio.models.dna", "CassetteChain"),
+    ("aixbio.models.dna", "CassetteDNA"),
+    ("aixbio.models.plasmid", "PlasmidChain"),
+    ("aixbio.models.plasmid", "PlasmidRecord"),
+    ("aixbio.models.audit", "AgentDecision"),
+    ("aixbio.models.remediation", "RemediationAction"),
+    ("aixbio.models.remediation", "PlannedFix"),
+    ("aixbio.models.remediation", "RemediationPlan"),
+    ("aixbio.models.structure", "StructureResult"),
+    ("aixbio.models.structure", "StructureReport"),
+]
+
+
 def compile_pipeline(checkpointer=None):
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        serde = JsonPlusSerializer(allowed_msgpack_modules=_ALLOWED_MSGPACK_MODULES)
+        checkpointer = MemorySaver(serde=serde)
     return build_main_graph().compile(checkpointer=checkpointer)
